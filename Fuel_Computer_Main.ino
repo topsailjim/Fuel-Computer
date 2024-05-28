@@ -1,6 +1,22 @@
 
+// Sketch "Fuel Computer" Author : Jim Anderson Stuart Florida
+
+/* Sketch takes conditioned negative - going pulse from fuel injector
+   to determine engine speed and fuel consumption rate.
+   RPM = 120/(injection pulse period)
+   Fuel Consumption per pulse = 285 mCC / (microsecond injection duration)
+   Current fuel tank level is determined as proportional to voltage at sender pin.
+   Battery voltage is also proportionately calculated. Information is stored in 
+   1 megabyte flash memory.
+   A GPS module provides position, course and speed and that information is
+   used to calculate miles  per gallon and endurance. Trip function and various
+   history parameters (total hours, fuel, etc.) are provided. All information is
+   presented on a 3.5" TFT touch screen lcd display.
+   Sketch runs on Arduino Mega or higher board.
+*/
+
 //Latest working version
-String  Version = "Ver. 2/23/24";
+String  Version = "Ver. 5/18/24";
 
 // 8/9/23 Added gps time to nav display
 // 10/8/23 Fix DST calculations
@@ -21,20 +37,19 @@ String  Version = "Ver. 2/23/24";
 // 2/5/24  Moved GPS encode to top of Loop.
 // 2/23/24 Repllaced "engine.Last." course and speed variables in engine and nav pages with "gps->"
 //  to see if that fixes periodic "blinks" of the gps data.
+//
+//  3/5/24 Fuel useage seems about 8% low, so let's bump down the #define MICROSECPERMILLICC 285
+//         to 262
+//  3/19/24 Modified condition to calculate endurance in UpdatePage2() (Navigation). Removed
+//          Dependance on good course.
+//  4/27/24 Moved screenStatus into engine structure so it will be saved to memory.
+//          Also changed stale handling function from restarting gps object to program reset.
+//  5/4/24  Added engine housekeeping variable to restor last display page on restart from stale GPS data.
+//  5/7/24 Fixed issue of time going negative
+//  5/11/24 Fixed issue of wrong page drawn on stale restart.
+//  5/18/24 changed speed clamp in UpdatePage2() to print float equal or below 9.9. Was
+//   less than 10.0
 
-/* Sketch takes conditioned negative - going pulse from fuel injector
-   to determine engine speed and fuel consumption rate.
-   RPM = 120/(injection pulse period)
-   Fuel Consumption per pulse = 285 mCC / (microsecond injection duration)
-   Current fuel tank level is determined as proportional to voltage at sender pin.
-   Battery voltage is also proportionately calculated. Information is stored in 
-   1 megabyte flash memory.
-   A GPS module provides position, course and speed and that information is
-   used to calculate miles  per gallon and endurance. Trip function and various
-   history parameters (total hours, fuel, etc.) are provided. All information is
-   presented on a 3.5" TFT touch screen lcd display.
-   Sketch runs on Arduino Mega or higher board.
-*/
 
 //*****************************************************************************
 //
@@ -155,8 +170,6 @@ String  Version = "Ver. 2/23/24";
 
 // Hardware:
 
-#define UBRR1H
-
 
 // Display touch controller interrupt digital pin
 #define FT6236_INT   5
@@ -217,8 +230,9 @@ bool   WHITESCREEN;
 #define MAINTENANCEINTERVAL 6000     // 100 hours
 
 #define GALLONSPERCC  .000264172
-#define MICROSECPERMILLICC 285       //From Suzuki data and tests
+/*#define MICROSECPERMILLICC 285       //From Suzuki data and tests*/
 
+#define MICROSECPERMILLICC 262 // 3/5/24
 //*****************************************************************
 // Globals
 //*****************************************************************
@@ -304,7 +318,7 @@ unsigned long   resetAStart, resetBStart, resetMaintStart, resetProgStart;
 bool            tripAButtonLatch, tripBButtonLatch, maintButtonLatch, histButtonLatch;
 unsigned long   buttonUpStart, buttonUpTimer;
 
-bool         screenStatus;
+//bool         screenStatus;
 
 
 /*
@@ -383,6 +397,11 @@ struct  Engine {
     unsigned long   pulseWidth;
   } Last;
 
+  // Housekeeping variables stored
+  uint8_t      lastPage;
+  bool         screenStatus;
+  bool         RESTART;
+
 };
 Engine engine;
 
@@ -437,7 +456,6 @@ bool  RESETFLAG;
 //TinyGPSPlus gps; // Let's put it on the heap
 
 TinyGPSPlus* gps;
-
 
 
 //****************************************************************
@@ -999,7 +1017,7 @@ if(WHITESCREEN == true)
   tft.printNumI(speed, RPMLOC, 4, ' ');
   tft.printNumI(engine.Last.fuelRemain, FUELLOC, 3, ' ');
 
-  if(/*gps->speed.isValid()&&*/(!SPEEDSTALE)) tft.printNumF(/*engine.Last.knots*/gps->speed.knots(), 1, SPEEDLOC,'.',4);
+  if(/*gps->speed.isValid()&&*/(!SPEEDSTALE)) tft.printNumF(gps->speed.knots(), 1, SPEEDLOC,'.',4);
   else tft.print("----", SPEEDLOC);
 
   // Battery Voltage
@@ -1036,9 +1054,9 @@ void  UpdatePage2()  // Navigation
     tft.print("---------", LONLOC);
   }  
 
- 
-  if((CheckRunning())&&(!SPEEDSTALE)&&(!COURSESTALE)&&(/*engine.Last.course*/gps->course.deg() <= 360.0)
-  &&(/*engine.Last.course*/gps->course.deg() >= 0.)) 
+
+  if((CheckRunning())&&(!SPEEDSTALE))
+
   { 
     // Nautical Miles per Gallon
     tft.printNumF(engine.Last.nmpg, 1, NMPGLOC, '.',5);
@@ -1055,7 +1073,7 @@ void  UpdatePage2()  // Navigation
 
     // Calculate endurance miles
 
-    float enduranceMiles = enduranceTime * /*engine.Last.knots*/gps->speed.knots();
+    float enduranceMiles = enduranceTime * gps->speed.knots();
     
     tft.printNumF(enduranceMiles, 1, EDCDISTLOC,'.',6);
   } 
@@ -1071,14 +1089,14 @@ void  UpdatePage2()  // Navigation
 
   // Speed and Course
   if(!SPEEDSTALE) {
-   if(/*engine.Last.knots*/gps->speed.knots() < 10.0)
-    tft.printNumF(/*engine.Last.knots*/gps->speed.knots(), 1, SPEEDLOC2,'.',3);
-    else tft.printNumI((int) round(/*engine.Last.knots*/gps->speed.knots()), SPEEDLOC2,3);
+   if(gps->speed.knots() <= 9.9)
+    tft.printNumF(gps->speed.knots(), 1, SPEEDLOC2,'.',3);
+    else tft.printNumI((int) round(gps->speed.knots()), SPEEDLOC2,3);
     }  
    else tft.print("---", SPEEDLOC2);
 
-  if((!COURSESTALE)&&(/*engine.Last.course*/gps->course.deg() <= 360.)&&(/*engine.Last.course*/gps->course.deg() >= 0.))
-    tft.printNumI((int)(round(/*engine.Last.course*/gps->course.deg())), COURSELOC,3);
+  if((!COURSESTALE)&&(gps->course.deg() <= 360.)&&(gps->course.deg() >= 0.))
+    tft.printNumI((int)(round(gps->course.deg())), COURSELOC,3);
   else  tft.print("---", COURSELOC);
 
   // Let's see how many satellites we have
@@ -1102,6 +1120,7 @@ void  UpdatePage2()  // Navigation
     uint16_t  Year;
   
     Hour -= 5;  // Eastern Standard Time Zone correction
+    if(Hour < 1) Hour += 12;
   
     //get date from GPS module and check for DST
     if (gps->date.isValid())
@@ -1415,6 +1434,7 @@ void  Button1()  // Instruments
   
   DrawButtons();
   DrawPage1();
+  engine.lastPage = Instruments;
   
 }
 
@@ -1423,7 +1443,7 @@ void  Button2()  // Navigation
   currentDisplayPage  = Navigation;
   DrawButtons();
   DrawPage2();
-  
+  engine.lastPage = 2;
 }
 
 void  Button3()  // Trip A
@@ -1431,7 +1451,7 @@ void  Button3()  // Trip A
   currentDisplayPage  = TripA;
   DrawButtons();
   DrawPage3();
-  
+  engine.lastPage = 3;
 }
 
 void  Button4()  // Trip B
@@ -1439,7 +1459,7 @@ void  Button4()  // Trip B
   currentDisplayPage  = TripB;
   DrawButtons();
   DrawPage4();
-  
+  engine.lastPage = 4;
 }
 
 void  Button5()  // History
@@ -1474,7 +1494,7 @@ void  Button5()  // History
   
   DrawButtons();
   DrawPage5();
-  
+  engine.lastPage = 5;
 }
 
 void  TripAStartButton()
@@ -1790,15 +1810,15 @@ bool  IsInRect(TouchLocation point, Rect rect)
 void  screenOff()
 {
   Serial.println("screen off");
-  screenStatus = OFF;
-  //RESETFLAG = true;
+  engine.screenStatus = OFF;
+  
 }
 
 void  screenOn()
 {
   Serial.println("screen on");
   
-  screenStatus = ON;
+  engine.screenStatus = ON;
   
   // Clear the screen and draw the frame
   tft.clrScr();
@@ -2830,8 +2850,11 @@ void setup()
   engine.Last.tripALon = 0;
   engine.Last.tripBLat = 0;
   engine.Last.tripBLon = 0;
+  engine.lastPage = 1;
+  engine.RESTART = false;
+  engine.screenStatus = OFF;
 
-  screenStatus = OFF;
+  
   WHITESCREEN = true;
 
   // Clear the screen and draw the first page
@@ -2909,17 +2932,55 @@ void setup()
     Serial.println("Bad data - trying restore");
     ResetMemoryData();
   }
+
+  if(engine.RESTART)
+  {
+    // First, let's clamp the stored page number.
+    if((engine.lastPage < Instruments) ||(engine.lastPage > History))
+      engine.lastPage = Instruments;
+
+    // Now lets restore the page displayed before the restart
+    currentDisplayPage = engine.lastPage;
+    switch(engine.lastPage) {
+      case Instruments:
+       DrawPage1();
+       break;
+  
+     case Navigation:
+      DrawPage2();
+      break;
+  
+     case TripA:
+      DrawPage3();
+      break;
+  
+     case TripB:
+      DrawPage4();
+      break;
+  
+     case History:
+      DrawPage5();
+      break;
+    }  // end switch
+      
+   engine.RESTART = false;
+  }  // end if engine.restart
+
+
+
+
+  
   Serial.println("SETUP COMPLETE OK");
 
-  // Memory Synchronization with engine 07/01/23
-//  engine.Total.hours = 369;
-//  engine.Total.minutes = 32;
+  // Memory Synchronization with engine 05/19/24
+//  engine.Total.hours = 477;
+//  engine.Total.minutes = 14;
 //  engine.Total.fuelUsed = 706.5;
-//  engine.Total.speed_time_array[0] = 3726;
-//  engine.Total.speed_time_array[1] = 5830;
-//  engine.Total.speed_time_array[2] = 3406;
-//  engine.Total.speed_time_array[3] = 7340;
-//  engine.Total.speed_time_array[4] = 1534;
+//  engine.Total.speed_time_array[0] = 4540;
+//  engine.Total.speed_time_array[1] = 7584;
+//  engine.Total.speed_time_array[2] = 4294;
+//  engine.Total.speed_time_array[3] = 10302;
+//  engine.Total.speed_time_array[4] = 1578;
 //  engine.Total.speed_time_array[5] = 336;
 //  engine.Total.speed_time_array[6] = 0;
 //  engine.Last.maintenanceTimer = 0;
@@ -3127,14 +3188,20 @@ void loop()
        }
         
       if(staleTimer >= MAXSTALETIME){ // stale too long. Kill the gps instance
-        Serial.println("***************GPS RENEWED**************");
-        delete gps;
+//        Serial.println("***************GPS RENEWED**************");
+//        delete gps;
+//
+//        // and reconstitute it.
+//        TinyGPSPlus *gps = new TinyGPSPlus();
+//        
+//        staleTimer = 0;
+//        STALEFLAG = false;
 
-        // and reconstitute it.
-        TinyGPSPlus *gps = new TinyGPSPlus();
-        
-        staleTimer = 0;
-        STALEFLAG = false;
+          // Let's restart the whole shebang
+          // Set reset
+          engine.RESTART = true;
+          engine.lastPage = currentDisplayPage;
+          RESETFLAG = true;
          
       }
     }
@@ -3149,7 +3216,7 @@ void loop()
     }
     
     // Display
-    if(screenStatus == ON)
+    if(engine.screenStatus == ON)
     {
       switch (currentDisplayPage ) {
         case Instruments:
@@ -3216,7 +3283,7 @@ void loop()
   }
 
 
-  // ON / OFF Button Pushed
+  // Need to restart the program
   if(RESETFLAG == true)
   {
   // Update flash memory
